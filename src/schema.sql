@@ -1,4 +1,5 @@
--- Safe to run more than once: every statement is "if not exists".
+-- Run on every server start (see migrate() in db.js), so every statement
+-- must be safe to repeat.
 
 CREATE TABLE IF NOT EXISTS slots (
   id        TEXT PRIMARY KEY,

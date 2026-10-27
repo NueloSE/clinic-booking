@@ -1,4 +1,5 @@
 import dns from 'node:dns';
+import { readFile } from 'node:fs/promises';
 import net from 'node:net';
 import pg from 'pg';
 
@@ -14,15 +15,20 @@ net.setDefaultAutoSelectFamily(false);
 
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 10,
   connectionTimeoutMillis: 10_000,
-  idleTimeoutMillis: 30_000,
 });
 
 // An idle connection dropped by the server must not crash the process.
 pool.on('error', (err) => {
   console.error('Idle database connection error:', err.message);
 });
+
+// Creates any missing tables. schema.sql only uses "IF NOT EXISTS", so this is
+// safe on every start.
+export async function migrate() {
+  const sql = await readFile(new URL('./schema.sql', import.meta.url), 'utf8');
+  await pool.query(sql);
+}
 
 // Runs fn inside a transaction and returns its result.
 // Rolls back if fn throws, so a failed request never leaves half-written rows.

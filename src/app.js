@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { pool, withTransaction } from './db.js';
 
@@ -32,15 +32,51 @@ function isValidSlot(slot) {
   );
 }
 
+// Something@something.something with no spaces. Full email validation is far
+// more complex; this is the usual practical check.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Cleans the POST /bookings body. Returns { booking } or { error } for a 400.
+function parseNewBooking(body) {
+  const slotId = body?.slot_id;
+  const name = typeof body?.name === 'string' ? body.name.trim() : '';
+  const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+
+  if (typeof slotId !== 'string' || slotId === '') return { error: 'slot_id is required' };
+  if (name === '') return { error: 'name is required' };
+  if (email === '') return { error: 'email is required' };
+  if (!EMAIL_PATTERN.test(email)) return { error: 'email is not valid' };
+  return { booking: { slotId, name, email } };
+}
+
 export function createApp() {
+  if (!process.env.API_KEY) {
+    throw new Error('API_KEY is not set');
+  }
+  const expectedKey = Buffer.from(process.env.API_KEY);
+
   const app = express();
-  app.use(express.json());
 
   // Health check for the host and the keep-alive pinger. Confirms the DB answers too.
+  // Registered before the key check, so it is the only route that needs no key.
   app.get('/health', async (req, res) => {
     await pool.query('SELECT 1');
     res.json({ ok: true });
   });
+
+  // Every other request must carry the right X-API-Key. timingSafeEqual takes
+  // the same time however many characters match, so the key can't be guessed
+  // by timing responses. It needs equal lengths, hence the length check first.
+  app.use((req, res, next) => {
+    const sentKey = Buffer.from(req.get('X-API-Key') ?? '');
+    if (sentKey.length !== expectedKey.length || !timingSafeEqual(sentKey, expectedKey)) {
+      return res.status(401).json({ error: 'missing or invalid API key' });
+    }
+    next();
+  });
+
+  // After the key check, so a request without a key gets 401 even if its body is broken.
+  app.use(express.json());
 
   // Deletes every booking and replaces all slots, in one transaction so a
   // failure halfway leaves the old data untouched.
@@ -96,12 +132,28 @@ export function createApp() {
   });
 
   app.post('/bookings', async (req, res) => {
-    const { slot_id, name, email } = req.body ?? {};
+    const { booking, error } = parseNewBooking(req.body);
+    if (error) {
+      return res.status(400).json({ error });
+    }
+
+    // The database's clock decides "started", so our server's clock can't be wrong.
+    const slot = await pool.query(
+      'SELECT start_at <= now() AS started FROM slots WHERE id = $1',
+      [booking.slotId],
+    );
+    if (slot.rows.length === 0) {
+      return res.status(404).json({ error: 'slot not found' });
+    }
+    if (slot.rows[0].started) {
+      return res.status(400).json({ error: 'slot has already started' });
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO bookings (id, slot_id, name, email, status)
        VALUES ($1, $2, $3, $4, 'confirmed')
        RETURNING *`,
-      [randomUUID(), slot_id, name, email],
+      [randomUUID(), booking.slotId, booking.name, booking.email],
     );
     res.status(201).json(toBooking(rows[0]));
   });

@@ -2,13 +2,15 @@
 -- must be safe to repeat.
 
 CREATE TABLE IF NOT EXISTS slots (
-  id        TEXT PRIMARY KEY,
-  provider  TEXT NOT NULL,
-  start_at  TIMESTAMPTZ NOT NULL,
-  end_at    TIMESTAMPTZ NOT NULL
+  id          TEXT PRIMARY KEY,
+  provider    TEXT NOT NULL,
+  -- start/end exactly as the client sent them, so we return the same strings.
+  start_text  TEXT NOT NULL,
+  end_text    TEXT NOT NULL,
+  -- The same times parsed, for sorting and for "has this slot started?".
+  start_at    TIMESTAMPTZ NOT NULL,
+  end_at      TIMESTAMPTZ NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS slots_start_idx ON slots (start_at, id);
 
 CREATE TABLE IF NOT EXISTS bookings (
   -- seq gives a strict insertion order (created_at can tie within a millisecond).

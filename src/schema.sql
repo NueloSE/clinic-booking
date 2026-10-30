@@ -22,3 +22,9 @@ CREATE TABLE IF NOT EXISTS bookings (
   status      TEXT NOT NULL CHECK (status IN ('confirmed', 'cancelled')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- At most one confirmed booking per slot. Postgres checks this on every insert,
+-- so two requests at the same moment can't both succeed. Cancelled bookings
+-- don't count, which is what frees a slot when its booking is cancelled.
+CREATE UNIQUE INDEX IF NOT EXISTS one_confirmed_booking_per_slot
+  ON bookings (slot_id) WHERE status = 'confirmed';

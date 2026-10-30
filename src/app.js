@@ -2,7 +2,6 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { pool, withTransaction } from './db.js';
 
-// Database rows use snake_case columns; these turn them into the JSON shapes in the spec.
 function toSlot(row) {
   return {
     id: row.id,
@@ -32,11 +31,8 @@ function isValidSlot(slot) {
   );
 }
 
-// Something@something.something with no spaces. Full email validation is far
-// more complex; this is the usual practical check.
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Cleans the POST /bookings body. Returns { booking } or { error } for a 400.
 function parseNewBooking(body) {
   const slotId = body?.slot_id;
   const name = typeof body?.name === 'string' ? body.name.trim() : '';
@@ -57,8 +53,6 @@ export function createApp() {
 
   const app = express();
 
-  // Health check for the host and the keep-alive pinger. Confirms the DB answers too.
-  // Registered before the key check, so it is the only route that needs no key.
   app.get('/health', async (req, res) => {
     await pool.query('SELECT 1');
     res.json({ ok: true });
@@ -149,12 +143,27 @@ export function createApp() {
       return res.status(400).json({ error: 'slot has already started' });
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO bookings (id, slot_id, name, email, status)
-       VALUES ($1, $2, $3, $4, 'confirmed')
-       RETURNING *`,
-      [randomUUID(), booking.slotId, booking.name, booking.email],
-    );
+    // No "is it booked?" check first: two requests could both pass it before
+    // either inserts. We just insert and let the unique index reject the loser.
+    let rows;
+    try {
+      ({ rows } = await pool.query(
+        `INSERT INTO bookings (id, slot_id, name, email, status)
+         VALUES ($1, $2, $3, $4, 'confirmed')
+         RETURNING *`,
+        [randomUUID(), booking.slotId, booking.name, booking.email],
+      ));
+    } catch (err) {
+      // 23505: unique violation, someone already holds this slot.
+      if (err.code === '23505' && err.constraint === 'one_confirmed_booking_per_slot') {
+        return res.status(409).json({ error: 'slot already booked' });
+      }
+      // 23503: the slot vanished after our lookup (a /reset ran in between).
+      if (err.code === '23503') {
+        return res.status(404).json({ error: 'slot not found' });
+      }
+      throw err;
+    }
     res.status(201).json(toBooking(rows[0]));
   });
 
@@ -164,6 +173,28 @@ export function createApp() {
       return res.status(404).json({ error: 'booking not found' });
     }
     res.json(toBooking(rows[0]));
+  });
+
+  // Cancelling keeps the row and changes its status, so the booking can still be
+  // looked up and the unique index stops counting it, which frees the slot.
+  app.delete('/bookings/:id', async (req, res) => {
+    // Only a confirmed booking changes, so if two cancels race, one of them wins.
+    const { rows } = await pool.query(
+      `UPDATE bookings SET status = 'cancelled'
+       WHERE id = $1 AND status = 'confirmed'
+       RETURNING *`,
+      [req.params.id],
+    );
+    if (rows.length > 0) {
+      return res.json(toBooking(rows[0]));
+    }
+
+    // Nothing changed: either there's no such booking or it was already cancelled.
+    const existing = await pool.query('SELECT 1 FROM bookings WHERE id = $1', [req.params.id]);
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ error: 'booking not found' });
+    }
+    res.status(409).json({ error: 'booking already cancelled' });
   });
 
   // Any path we don't handle. Without this Express answers with an HTML page,

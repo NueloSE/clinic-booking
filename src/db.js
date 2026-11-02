@@ -34,15 +34,22 @@ export async function migrate() {
 // Rolls back if fn throws, so a failed request never leaves half-written rows.
 export async function withTransaction(fn) {
   const client = await pool.connect();
+  // The pool only listens for errors on idle connections. If this one breaks
+  // while we hold it, its 'error' event would crash the process with no
+  // listener. The query in progress fails as well, so logging is enough.
+  const onError = (err) => console.error('Database connection error:', err.message);
+  client.on('error', onError);
   try {
     await client.query('BEGIN');
     const result = await fn(client);
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    // On a broken connection ROLLBACK fails too; keep the original error.
+    await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally {
+    client.off('error', onError);
     client.release();
   }
 }

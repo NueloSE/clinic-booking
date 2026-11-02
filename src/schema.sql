@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS slots (
 );
 
 CREATE TABLE IF NOT EXISTS bookings (
-  -- seq gives a strict insertion order (created_at can tie within a millisecond).
   seq         BIGSERIAL PRIMARY KEY,
   id          TEXT NOT NULL UNIQUE,
   slot_id     TEXT NOT NULL REFERENCES slots (id) ON DELETE CASCADE,
@@ -28,3 +27,28 @@ CREATE TABLE IF NOT EXISTS bookings (
 -- don't count, which is what frees a slot when its booking is cancelled.
 CREATE UNIQUE INDEX IF NOT EXISTS one_confirmed_booking_per_slot
   ON bookings (slot_id) WHERE status = 'confirmed';
+
+-- Finds one person's bookings in order without reading every row (GET /bookings).
+CREATE INDEX IF NOT EXISTS bookings_by_email ON bookings (email, seq);
+
+-- One row per Idempotency-Key: a fingerprint of the request body and the
+-- response we sent, so a retry gets the same response instead of a new booking.
+-- status_code and response_body stay empty while the first request is running.
+-- response_body is JSON, not JSONB: JSONB reorders keys, JSON keeps the exact text.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key            TEXT PRIMARY KEY,
+  request_hash   TEXT NOT NULL,
+  status_code    INTEGER,
+  response_body  JSON,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per booking attempt, for the limit of 5 attempts per email per
+-- minute. An email's rows older than a minute are deleted each time it tries again.
+CREATE TABLE IF NOT EXISTS booking_attempts (
+  email         TEXT NOT NULL,
+  attempted_at  TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS booking_attempts_by_email
+  ON booking_attempts (email, attempted_at);

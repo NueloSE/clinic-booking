@@ -1,4 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { pool, withTransaction } from './db.js';
 
@@ -217,6 +218,11 @@ export function createApp() {
     await pool.query('SELECT 1');
     res.json({ ok: true });
   });
+
+  // The React web page, built into dist/ by `npm run build`. It needs no key to
+  // load, but it asks the user for the key and sends it with every API call,
+  // like any other client.
+  app.use(express.static(fileURLToPath(new URL('../dist', import.meta.url))));
 
   // Every other request must carry the right X-API-Key. timingSafeEqual takes
   // the same time however many characters match, so the key can't be guessed

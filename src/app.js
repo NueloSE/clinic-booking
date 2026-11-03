@@ -206,7 +206,7 @@ async function createBookingOnce(client, key, body) {
   return result;
 }
 
-export function createApp() {
+function createApp() {
   if (!process.env.API_KEY) {
     throw new Error('API_KEY is not set');
   }
@@ -219,10 +219,11 @@ export function createApp() {
     res.json({ ok: true });
   });
 
-  // The React web page, built into dist/ by `npm run build`. It needs no key to
-  // load, but it asks the user for the key and sends it with every API call,
-  // like any other client.
-  app.use(express.static(fileURLToPath(new URL('../dist', import.meta.url))));
+  // The React web page, built into public/ by `npm run build`. It needs no key
+  // to load, but it asks the user for the key and sends it with every API call,
+  // like any other client. (On Vercel the CDN serves public/ and this line is
+  // ignored; locally it serves the page.)
+  app.use(express.static(fileURLToPath(new URL('../public', import.meta.url))));
 
   // Every other request must carry the right X-API-Key. timingSafeEqual takes
   // the same time however many characters match, so the key can't be guessed
@@ -403,3 +404,6 @@ export function createApp() {
 
   return app;
 }
+
+// Vercel runs the app from this default export; locally server.js listens on a port.
+export default createApp();

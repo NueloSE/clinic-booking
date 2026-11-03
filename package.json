@@ -13,7 +13,8 @@
     "test": "node --env-file=.env --test --test-concurrency=1 test/",
     "build": "vite build",
     "dev:web": "vite",
-    "seed": "node --env-file=.env scripts/seed.js"
+    "seed": "node --env-file=.env scripts/seed.js",
+    "migrate": "node --env-file=.env scripts/migrate.js"
   },
   "license": "MIT",
   "dependencies": {

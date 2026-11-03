@@ -7,9 +7,8 @@ if (!process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is not set');
 }
 
-// Node 20 tries each DNS address for only 250ms before giving up ("happy eyeballs").
-// Over a slow link to the database every attempt can time out, so connect to one
-// IPv4 address and let the normal TCP timeout apply instead.
+// Node 20 gives each address only 250ms to connect, which a slow link to the
+// database can exceed. Use one IPv4 address and the normal TCP timeout.
 dns.setDefaultResultOrder('ipv4first');
 net.setDefaultAutoSelectFamily(false);
 
@@ -18,25 +17,20 @@ export const pool = new pg.Pool({
   connectionTimeoutMillis: 10_000,
 });
 
-// An idle connection dropped by the server must not crash the process.
 pool.on('error', (err) => {
   console.error('Idle database connection error:', err.message);
 });
 
-// Creates any missing tables. schema.sql only uses "IF NOT EXISTS", so this is
-// safe on every start.
+// schema.sql only uses IF NOT EXISTS, so this is safe to run on every start.
 export async function migrate() {
   const sql = await readFile(new URL('./schema.sql', import.meta.url), 'utf8');
   await pool.query(sql);
 }
 
-// Runs fn inside a transaction and returns its result.
-// Rolls back if fn throws, so a failed request never leaves half-written rows.
 export async function withTransaction(fn) {
   const client = await pool.connect();
-  // The pool only listens for errors on idle connections. If this one breaks
-  // while we hold it, its 'error' event would crash the process with no
-  // listener. The query in progress fails as well, so logging is enough.
+  // The pool only listens for errors on idle connections. Without this, a
+  // connection dropped mid-transaction would crash the process.
   const onError = (err) => console.error('Database connection error:', err.message);
   client.on('error', onError);
   try {

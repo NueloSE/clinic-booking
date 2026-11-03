@@ -3,7 +3,6 @@ import { formatSlot } from './format.js';
 
 const PAGE_SIZE = 10;
 
-// Every booking for one email, oldest first, a page at a time (GET /bookings).
 export default function MyBookings({ request, slotsById, initialEmail, onCancel }) {
   const [email, setEmail] = useState(initialEmail);
   const [bookings, setBookings] = useState(null);
@@ -11,7 +10,7 @@ export default function MyBookings({ request, slotsById, initialEmail, onCancel 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // With a cursor this fetches the next page and adds it to the list.
+  // With a cursor, adds the next page to the list.
   async function load(cursor) {
     const params = new URLSearchParams({ email: email.trim(), limit: PAGE_SIZE });
     if (cursor) params.set('cursor', cursor);

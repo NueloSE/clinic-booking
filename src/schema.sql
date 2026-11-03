@@ -1,13 +1,12 @@
--- Run on every server start (see migrate() in db.js), so every statement
--- must be safe to repeat.
+-- Runs on every server start, so every statement must be safe to repeat.
 
 CREATE TABLE IF NOT EXISTS slots (
   id          TEXT PRIMARY KEY,
   provider    TEXT NOT NULL,
-  -- start/end exactly as the client sent them, so we return the same strings.
+  -- Exactly as sent, so we return the same strings.
   start_text  TEXT NOT NULL,
   end_text    TEXT NOT NULL,
-  -- The same times parsed, for sorting and for "has this slot started?".
+  -- Parsed, for sorting and the "has it started?" check.
   start_at    TIMESTAMPTZ NOT NULL,
   end_at      TIMESTAMPTZ NOT NULL
 );
@@ -22,19 +21,14 @@ CREATE TABLE IF NOT EXISTS bookings (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- At most one confirmed booking per slot. Postgres checks this on every insert,
--- so two requests at the same moment can't both succeed. Cancelled bookings
--- don't count, which is what frees a slot when its booking is cancelled.
+-- One confirmed booking per slot, enforced even for simultaneous requests.
+-- Cancelled bookings don't count, so cancelling frees the slot.
 CREATE UNIQUE INDEX IF NOT EXISTS one_confirmed_booking_per_slot
   ON bookings (slot_id) WHERE status = 'confirmed';
 
--- Finds one person's bookings in order without reading every row (GET /bookings).
 CREATE INDEX IF NOT EXISTS bookings_by_email ON bookings (email, seq);
 
--- One row per Idempotency-Key: a fingerprint of the request body and the
--- response we sent, so a retry gets the same response instead of a new booking.
--- status_code and response_body stay empty while the first request is running.
--- response_body is JSON, not JSONB: JSONB reorders keys, JSON keeps the exact text.
+-- JSON, not JSONB: JSONB reorders keys, so a replay wouldn't match exactly.
 CREATE TABLE IF NOT EXISTS idempotency_keys (
   key            TEXT PRIMARY KEY,
   request_hash   TEXT NOT NULL,
@@ -43,8 +37,6 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- One row per booking attempt, for the limit of 5 attempts per email per
--- minute. An email's rows older than a minute are deleted each time it tries again.
 CREATE TABLE IF NOT EXISTS booking_attempts (
   email         TEXT NOT NULL,
   attempted_at  TIMESTAMPTZ NOT NULL

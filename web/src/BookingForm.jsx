@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatSlot } from './format.js';
 
-// A pop-up card over the page. <dialog> with showModal() gives us the dimmed
-// background, keeps keyboard focus inside the card and closes on Esc.
+// showModal() gives the dimmed backdrop, keeps focus in the card and closes on Esc.
 export default function BookingForm({ slot, request, onBooked, onTaken, onClose }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -11,9 +10,8 @@ export default function BookingForm({ slot, request, onBooked, onTaken, onClose 
   const dialogRef = useRef(null);
   const nameRef = useRef(null);
 
-  // The Idempotency-Key for the booking being sent. If the network fails before
-  // we get an answer and the user presses Book again with the same details, we
-  // resend the same key, so the server can never create the booking twice.
+  // Kept until the server answers, so pressing Book again after a network error
+  // resends the same Idempotency-Key and can't book twice.
   const pending = useRef(null);
 
   useEffect(() => {
@@ -21,7 +19,7 @@ export default function BookingForm({ slot, request, onBooked, onTaken, onClose 
     nameRef.current.focus();
   }, []);
 
-  // A click on the dim background lands on the <dialog> itself, not the card inside it.
+  // A click on the backdrop lands on the <dialog> itself.
   function handleBackdropClick(event) {
     if (event.target === dialogRef.current) onClose();
   }
@@ -45,7 +43,6 @@ export default function BookingForm({ slot, request, onBooked, onTaken, onClose 
     } finally {
       setSending(false);
     }
-    // We got an answer, so the next press is a new attempt with a new key.
     pending.current = null;
 
     if (res.status === 201) {

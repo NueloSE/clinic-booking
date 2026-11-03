@@ -46,8 +46,7 @@ function parseNewBooking(body) {
   return { booking: { slotId, name, email } };
 }
 
-// JSON with object keys sorted, so bodies that differ only in key order or
-// spacing produce the same text.
+// Sorted keys, so key order and spacing don't change the fingerprint.
 function canonicalJson(value) {
   if (Array.isArray(value)) {
     return `[${value.map(canonicalJson).join(',')}]`;
@@ -64,14 +63,12 @@ function fingerprint(body) {
   return createHash('sha256').update(canonicalJson(body ?? null)).digest('hex');
 }
 
-// The cursor is the seq of the last booking on a page, base64url-encoded so
-// clients treat it as an opaque token.
+// The cursor is the seq of the last booking on the page.
 function encodeCursor(seq) {
   return Buffer.from(String(seq)).toString('base64url');
 }
 
-// Returns the seq inside a cursor, or null if it isn't one of ours.
-// At most 18 digits so it always fits in a Postgres bigint.
+// At most 18 digits, so it always fits in a bigint.
 function decodeCursor(cursor) {
   const text = Buffer.from(cursor, 'base64url').toString();
   return /^\d{1,18}$/.test(text) ? text : null;
@@ -79,23 +76,20 @@ function decodeCursor(cursor) {
 
 const MAX_ATTEMPTS = 5;
 
-// Records a booking attempt for the body's email, or returns a 429 response if
-// that email already made MAX_ATTEMPTS in the last minute. Returns null when
-// the attempt is allowed. Failed attempts count, because this runs before any
-// other check.
+// Returns a 429 response, or null after recording an allowed attempt. It runs
+// before validation, so failed attempts count too.
 async function checkRateLimit(client, body) {
   const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
   if (email === '') {
-    return null; // Nothing to count against; validation will turn it away.
+    return null;
   }
 
-  // A lock named after the email, held until our transaction ends. Requests
-  // for the same email take turns from here, so they can't all count 4 at
-  // once and all get in. Other emails use other locks and never wait.
+  // Requests for the same email take turns until the transaction ends, so they
+  // can't all count 4 and all get in.
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [email]);
 
-  // clock_timestamp() is the time right now. now() is when the transaction
-  // started, which can be earlier if we waited for the lock.
+  // clock_timestamp(), not now(): now() is when the transaction started, before
+  // we waited for the lock.
   await client.query(
     `DELETE FROM booking_attempts
      WHERE email = $1 AND attempted_at <= clock_timestamp() - interval '60 seconds'`,
@@ -109,7 +103,7 @@ async function checkRateLimit(client, body) {
      WHERE email = $1`,
     [email],
   );
-  // A rejected attempt isn't recorded, so the wait in Retry-After stays true.
+  // A rejected attempt isn't recorded, so Retry-After stays accurate.
   if (rows[0].attempts >= MAX_ATTEMPTS) {
     return {
       status: 429,
@@ -125,16 +119,13 @@ async function checkRateLimit(client, body) {
   return null;
 }
 
-// Applies the booking rules using a transaction's client and returns the
-// response to send instead of sending it, so it can also be saved for an
-// Idempotency-Key.
+// Returns the response instead of sending it, so it can be saved for an Idempotency-Key.
 async function createBooking(client, body) {
   const { booking, error } = parseNewBooking(body);
   if (error) {
     return { status: 400, body: { error } };
   }
 
-  // The database's clock decides "started", so our server's clock can't be wrong.
   const slot = await client.query(
     'SELECT start_at <= now() AS started FROM slots WHERE id = $1',
     [booking.slotId],
@@ -146,10 +137,9 @@ async function createBooking(client, body) {
     return { status: 400, body: { error: 'slot has already started' } };
   }
 
-  // No "is it booked?" check first: two requests could both pass it before
-  // either inserts. We just insert and let the unique index decide. If the slot
-  // already has a confirmed booking, ON CONFLICT skips the insert and no row
-  // comes back. Unlike an error, that doesn't abort a surrounding transaction.
+  // No "is it free?" check first, since two requests could both pass it. The
+  // unique index decides. ON CONFLICT returns no row rather than an error,
+  // which would abort the transaction.
   const { rows } = await client.query(
     `INSERT INTO bookings (id, slot_id, name, email, status)
      VALUES ($1, $2, $3, $4, 'confirmed')
@@ -167,13 +157,12 @@ async function attemptBooking(client, body) {
   return (await checkRateLimit(client, body)) ?? createBooking(client, body);
 }
 
-// Runs attemptBooking at most once per Idempotency-Key, inside a transaction.
 // A replay or a 422 isn't a new attempt, so neither counts towards the rate limit.
 async function createBookingOnce(client, key, body) {
   const hash = fingerprint(body);
 
-  // Claim the key before doing anything else. If another request holds it,
-  // Postgres makes us wait here until that request commits or rolls back.
+  // Claim the key first. A concurrent request with the same key waits here
+  // until this transaction ends, then replays what we saved.
   const claim = await client.query(
     `INSERT INTO idempotency_keys (key, request_hash)
      VALUES ($1, $2)
@@ -181,7 +170,6 @@ async function createBookingOnce(client, key, body) {
     [key, hash],
   );
 
-  // The key was already used: replay the saved response, or 422 if the body differs.
   if (claim.rowCount === 0) {
     const { rows } = await client.query(
       'SELECT request_hash, status_code, response_body FROM idempotency_keys WHERE key = $1',
@@ -195,7 +183,7 @@ async function createBookingOnce(client, key, body) {
 
   const result = await attemptBooking(client, body);
   if (result.status === 429) {
-    // Not saved: after waiting, a retry with this key should get a real try.
+    // Not saved, so a retry after waiting gets a real attempt.
     await client.query('DELETE FROM idempotency_keys WHERE key = $1', [key]);
   } else {
     await client.query(
@@ -219,15 +207,10 @@ function createApp() {
     res.json({ ok: true });
   });
 
-  // The React web page, built into public/ by `npm run build`. It needs no key
-  // to load, but it asks the user for the key and sends it with every API call,
-  // like any other client. (On Vercel the CDN serves public/ and this line is
-  // ignored; locally it serves the page.)
+  // The web page. On Vercel the CDN serves public/ and this line is ignored.
   app.use(express.static(fileURLToPath(new URL('../public', import.meta.url))));
 
-  // Every other request must carry the right X-API-Key. timingSafeEqual takes
-  // the same time however many characters match, so the key can't be guessed
-  // by timing responses. It needs equal lengths, hence the length check first.
+  // timingSafeEqual stops the key being guessed by timing, but needs equal lengths.
   app.use((req, res, next) => {
     const sentKey = Buffer.from(req.get('X-API-Key') ?? '');
     if (sentKey.length !== expectedKey.length || !timingSafeEqual(sentKey, expectedKey)) {
@@ -236,11 +219,9 @@ function createApp() {
     next();
   });
 
-  // After the key check, so a request without a key gets 401 even if its body is broken.
+  // After the key check, so no key means 401 even with a broken body.
   app.use(express.json());
 
-  // Deletes every booking and replaces all slots, in one transaction so a
-  // failure halfway leaves the old data untouched.
   app.post('/reset', async (req, res) => {
     const slots = req.body?.slots;
     if (!Array.isArray(slots) || !slots.every(isValidSlot)) {
@@ -256,8 +237,7 @@ function createApp() {
         await client.query('DELETE FROM idempotency_keys');
         await client.query('DELETE FROM bookings');
         await client.query('DELETE FROM slots');
-        // Inserts every slot in one query. Postgres parses start/end here, so an
-        // unparseable time fails the whole reset instead of storing bad data.
+        // Postgres parses start/end here, so a bad date fails the whole reset.
         await client.query(
           `INSERT INTO slots (id, provider, start_text, end_text, start_at, end_at)
            SELECT id, provider, start, "end", start::timestamptz, "end"::timestamptz
@@ -266,7 +246,7 @@ function createApp() {
         );
       });
     } catch (err) {
-      // 22007/22008: Postgres could not read a date-time.
+      // 22007/22008: invalid date-time.
       if (err.code === '22007' || err.code === '22008') {
         return res.status(400).json({ error: 'start and end must be ISO 8601 date-times' });
       }
@@ -276,8 +256,6 @@ function createApp() {
     res.json({ ok: true });
   });
 
-  // Every slot, earliest start first, with available = false while it has a
-  // confirmed booking.
   app.get('/slots', async (req, res) => {
     const provider = typeof req.query.provider === 'string' ? req.query.provider : null;
     const { rows } = await pool.query(
@@ -294,17 +272,15 @@ function createApp() {
     res.json({ slots: rows.map((row) => ({ ...toSlot(row), available: row.available })) });
   });
 
-  // An empty Idempotency-Key header is treated like no header.
   app.post('/bookings', async (req, res) => {
-    const key = req.get('Idempotency-Key') || null;
+    const key = req.get('Idempotency-Key') || null; // An empty header counts as none.
     let result;
     try {
       result = await withTransaction((client) => (
         key === null ? attemptBooking(client, req.body) : createBookingOnce(client, key, req.body)
       ));
     } catch (err) {
-      // 23503: the slot vanished after our lookup (a /reset ran in between).
-      // With a key, the transaction rolled back, so nothing is saved for it.
+      // 23503: a /reset deleted the slot after our lookup.
       if (err.code === '23503') {
         return res.status(404).json({ error: 'slot not found' });
       }
@@ -316,9 +292,7 @@ function createApp() {
     res.status(result.status).json(result.body);
   });
 
-  // One person's bookings, oldest first, a page at a time.
   app.get('/bookings', async (req, res) => {
-    // Emails are stored trimmed and lower case, so this makes the match ignore case.
     const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
     if (email === '') {
       return res.status(400).json({ error: 'email is required' });
@@ -326,7 +300,6 @@ function createApp() {
 
     let limit = 10;
     if (req.query.limit !== undefined) {
-      // Whole numbers only, so "1.5", "-1" and "abc" are rejected.
       limit = /^\d+$/.test(req.query.limit) ? Number(req.query.limit) : 0;
       if (limit < 1 || limit > 50) {
         return res.status(400).json({ error: 'limit must be a whole number from 1 to 50' });
@@ -341,7 +314,7 @@ function createApp() {
       }
     }
 
-    // One row more than the page needs: if it comes back, there is a next page.
+    // One extra row tells us whether there's a next page.
     const { rows } = await pool.query(
       `SELECT * FROM bookings
        WHERE email = $1 AND seq > $2
@@ -364,10 +337,8 @@ function createApp() {
     res.json(toBooking(rows[0]));
   });
 
-  // Cancelling keeps the row and changes its status, so the booking can still be
-  // looked up and the unique index stops counting it, which frees the slot.
   app.delete('/bookings/:id', async (req, res) => {
-    // Only a confirmed booking changes, so if two cancels race, one of them wins.
+    // Only a confirmed booking changes, so if two cancels race, one wins.
     const { rows } = await pool.query(
       `UPDATE bookings SET status = 'cancelled'
        WHERE id = $1 AND status = 'confirmed'
@@ -378,7 +349,6 @@ function createApp() {
       return res.json(toBooking(rows[0]));
     }
 
-    // Nothing changed: either there's no such booking or it was already cancelled.
     const existing = await pool.query('SELECT 1 FROM bookings WHERE id = $1', [req.params.id]);
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: 'booking not found' });
@@ -386,15 +356,13 @@ function createApp() {
     res.status(409).json({ error: 'booking already cancelled' });
   });
 
-  // Any path we don't handle. Without this Express answers with an HTML page,
-  // but the spec says every error is {"error": "..."}.
+  // JSON instead of Express's default HTML page.
   app.use((req, res) => {
     res.status(404).json({ error: 'not found' });
   });
 
-  // Express 5 sends errors thrown in async handlers here.
   app.use((err, req, res, next) => {
-    // Problems reading the request body, such as malformed JSON.
+    // Malformed JSON and other body errors.
     if (err.status >= 400 && err.status < 500) {
       return res.status(err.status).json({ error: 'invalid request body' });
     }
@@ -405,5 +373,5 @@ function createApp() {
   return app;
 }
 
-// Vercel runs the app from this default export; locally server.js listens on a port.
+// Vercel runs this export; locally server.js listens on a port.
 export default createApp();

@@ -243,6 +243,34 @@ dialog .muted {
   color: var(--text);
 }
 
+.week-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding: 12px 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.week-nav strong,
+.week-nav span {
+  display: block;
+}
+
+.week-nav span {
+  font-size: 0.875rem;
+}
+
+.link:disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  cursor: default;
+}
+
 .danger {
   color: var(--error);
 }

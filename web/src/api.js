@@ -1,5 +1,4 @@
-// Every call to the API goes through here, so the key is always sent.
-// Throws only if there's no response at all (e.g. the network is down).
+// Throws only if there's no response at all, e.g. the network is down.
 export async function api(apiKey, method, path, body, headers = {}) {
   const res = await fetch(path, {
     method,

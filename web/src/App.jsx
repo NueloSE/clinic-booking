@@ -6,8 +6,7 @@ import BookingForm from './BookingForm.jsx';
 import Confirmation from './Confirmation.jsx';
 import MyBookings from './MyBookings.jsx';
 
-// The key is kept for this browser tab only (sessionStorage) and is never
-// written into the code.
+// Kept for this browser tab only.
 function readKey() {
   try {
     return sessionStorage.getItem('apiKey') ?? '';
@@ -21,7 +20,7 @@ function storeKey(key) {
     if (key) sessionStorage.setItem('apiKey', key);
     else sessionStorage.removeItem('apiKey');
   } catch {
-    // Storage blocked: the key just won't survive a refresh.
+    // Storage blocked; the key just won't survive a refresh.
   }
 }
 
@@ -34,6 +33,7 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [tab, setTab] = useState('book');
   const [lastEmail, setLastEmail] = useState('');
+  const [week, setWeek] = useState(null);
 
   function changeKey(key, error = '') {
     storeKey(key);
@@ -42,7 +42,7 @@ export default function App() {
     setSlots(null);
   }
 
-  // A 401 means the key is wrong, so go back to the key form.
+  // A 401 sends the user back to the key form.
   async function request(method, path, body, headers) {
     const res = await api(apiKey, method, path, body, headers);
     if (res.status === 401) changeKey('', 'That API key was not accepted.');
@@ -80,15 +80,13 @@ export default function App() {
 
   function bookAnother() {
     setConfirmed(null);
-    setSlots(null); // Don't show the old list, where the slot just booked still looks free.
+    setSlots(null); // The old list would still show the booked slot as free.
     loadSlots();
   }
 
-  // Used by the confirmation and by My bookings. Cancelling frees the slot,
-  // so the slot list is reloaded too.
   async function cancelBooking(id) {
     const res = await request('DELETE', `/bookings/${encodeURIComponent(id)}`);
-    // 409 means it was already cancelled, so either way it's cancelled now.
+    // 409: it was already cancelled.
     if (res.status === 200 || res.status === 409) {
       setConfirmed((c) => (c?.booking.id === id ? { ...c, booking: { ...c.booking, status: 'cancelled' } } : c));
     }
@@ -106,7 +104,7 @@ export default function App() {
     );
   }
 
-  // Slots that have already started can't be booked, so the Book tab hides them.
+  // Slots that have started can't be booked.
   const now = new Date();
   const upcoming = slots?.filter((slot) => new Date(slot.start) > now);
   const slotsById = new Map((slots ?? []).map((slot) => [slot.id, slot]));
@@ -126,7 +124,13 @@ export default function App() {
         {upcoming === undefined ? (
           !notice && <p className="muted">Loading slots…</p>
         ) : (
-          <SlotList slots={upcoming} selectedId={selected?.id} onSelect={setSelected} />
+          <SlotList
+            slots={upcoming}
+            selectedId={selected?.id}
+            onSelect={setSelected}
+            week={week}
+            onWeekChange={setWeek}
+          />
         )}
         {selected && (
           <BookingForm

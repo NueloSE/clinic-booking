@@ -1,10 +1,5 @@
-// Creates any missing tables. The local server does this on every start, but
-// on Vercel nothing runs at startup, so run this once against the production
-// database:
-//
-//   DATABASE_URL='postgresql://...' npm run migrate
-//
-// A DATABASE_URL set in the shell wins over the one in .env.
+// Creates the tables. Run once against the production database, since nothing
+// runs at startup on Vercel:  DATABASE_URL='postgresql://...' npm run migrate
 
 import { migrate, pool } from '../src/db.js';
 

@@ -1,11 +1,9 @@
-// End-to-end checks of every rule in the spec, one section per level.
-// They talk to a running server over HTTP, so they work locally or against
-// the deployed URL. Each test starts with POST /reset, which DELETES ALL
-// BOOKINGS, so never run this against a deployment you've already submitted.
+// Checks every rule in the spec against a running server. Each test calls
+// POST /reset, which deletes all bookings.
 //
-//   npm test                                     (server from .env, e.g. npm run dev)
-//   BASE_URL=https://your-app.onrender.com npm test
-//   SLOW=1 npm test                              (also waits out a Retry-After, ~1 min)
+//   npm test                                   (local server)
+//   BASE_URL=https://... API_KEY=... npm test   (a deployment)
+//   SLOW=1 npm test                            (also waits out a Retry-After)
 
 import { beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,8 +27,8 @@ async function call(method, path, { body, key = API_KEY, headers = {} } = {}) {
 
 const hoursFromNow = (h) => new Date(Date.now() + h * 60 * 60 * 1000).toISOString();
 
-// 30 future slots s1..s30 (s1 earliest) for two providers, plus one that has started.
-// They're sent out of order to check that GET /slots sorts them.
+// s1..s30 in the future (s1 earliest) plus one that has started, sent out of
+// order to check the sorting.
 const slots = [
   ...Array.from({ length: 30 }, (_, i) => ({
     id: `s${i + 1}`,
@@ -41,8 +39,7 @@ const slots = [
   { id: 'past', provider: 'Dr Ade', start: hoursFromNow(-1), end: hoursFromNow(-0.5) },
 ];
 
-// Every booking gets its own email unless a test says otherwise, so the
-// 5-per-minute limit only kicks in where a test wants it to.
+// A fresh email per booking, so the rate limit only applies where a test wants it.
 let emailCount = 0;
 const uniqueEmail = () => `patient${++emailCount}-${Date.now()}@example.com`;
 
@@ -66,7 +63,6 @@ describe('Level 1: list slots, book one, look up a booking', () => {
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.slots.map((s) => s.id), ['past', ...Array.from({ length: 30 }, (_, i) => `s${i + 1}`)]);
     assert.ok(res.body.slots.every((s) => s.available === true));
-    // start and end come back exactly as they were sent.
     const s1 = slots.find((s) => s.id === 's1');
     assert.deepEqual(res.body.slots[1], { ...s1, available: true });
   });
@@ -254,7 +250,6 @@ describe('Level 4: idempotent retries and paging', () => {
     }
     await book('s6'); // someone else's
 
-    // The email match ignores case.
     const page1 = await call('GET', '/bookings?email=PAGER@Example.com&limit=2');
     assert.equal(page1.status, 200);
     assert.deepEqual(page1.body.bookings.map((b) => b.id), ids.slice(0, 2));
@@ -297,11 +292,11 @@ describe('Level 5: at most 5 booking attempts per email per minute', () => {
   test('the 6th attempt gets 429 with Retry-After; failed attempts count', async () => {
     const email = 'spammer@example.com';
     const statuses = [];
-    statuses.push((await book('s1', { email })).status); // 201
-    statuses.push((await book('s1', { email })).status); // 409
-    statuses.push((await book('nope', { email })).status); // 404
-    statuses.push((await book('s2', { email, name: '' })).status); // 400
-    statuses.push((await book('s2', { email: '  SPAMMER@example.com ' })).status); // 201, same email
+    statuses.push((await book('s1', { email })).status);
+    statuses.push((await book('s1', { email })).status);
+    statuses.push((await book('nope', { email })).status);
+    statuses.push((await book('s2', { email, name: '' })).status);
+    statuses.push((await book('s2', { email: '  SPAMMER@example.com ' })).status); // same email
     assert.deepEqual(statuses, [201, 409, 404, 400, 201]);
 
     const sixth = await book('s3', { email });
